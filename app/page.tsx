@@ -33,7 +33,9 @@ function formatOnBlur(value: string): string {
   }
 }
 
-function parseTimeStr(value: string): { h: number; m: number; s: number } | null {
+function parseTimeStr(
+  value: string
+): { h: number; m: number; s: number } | null {
   if (/[０-９：]/.test(value)) return null;
   const trimmed = value.trim();
   if (!trimmed) return null;
@@ -56,7 +58,10 @@ function formatHhMmFromSeconds(sec: number): { label: string; nextDay: boolean }
   const s = sec % (24 * 3600);
   const h = Math.floor(s / 3600);
   const m = Math.floor((s % 3600) / 60);
-  return { label: `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`, nextDay };
+  return {
+    label: `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`,
+    nextDay,
+  };
 }
 
 /* ========= 現在時刻ベースの残り／経過 ========= */
@@ -106,12 +111,33 @@ function roundToQuarter(minutes: number, mode: "off" | "floor" | "ceil") {
 
 /* ========= 型 ========= */
 type TargetPreset = "4h" | "6h" | "7h" | "7_5h" | "8h" | "9h" | "custom";
+type BreakPreset =
+  | "00:00"
+  | "00:30"
+  | "00:45"
+  | "01:00"
+  | "01:30"
+  | "02:00"
+  | "custom";
+
+const BREAK_PRESET_SECONDS: Record<Exclude<BreakPreset, "custom">, number> = {
+  "00:00": 0,
+  "00:30": 30 * 60,
+  "00:45": 45 * 60,
+  "01:00": 60 * 60,
+  "01:30": 90 * 60,
+  "02:00": 120 * 60,
+};
 
 export default function Page() {
   /* 入力 */
   const [startText, setStartText] = useState("09:00");
   const [endText, setEndText] = useState("17:30");
-  const [breakText, setBreakText] = useState("01:00");
+
+  // 休憩：プリセット＋カスタム
+  const [breakPreset, setBreakPreset] = useState<BreakPreset>("01:00");
+  const [customBreakText, setCustomBreakText] = useState("01:00");
+
   const [overnight, setOvernight] = useState(false);
 
   /* 目標 */
@@ -180,32 +206,44 @@ export default function Page() {
 
   /* 入力ハンドラ */
   const onStartChange = useCallback((raw: string) => setStartText(cleanInput(raw)), []);
-  const onStartBlur   = useCallback((raw: string) => setStartText(formatOnBlur(raw)), []);
-  const onEndChange   = useCallback((raw: string) => setEndText(cleanInput(raw)), []);
-  const onEndBlur     = useCallback((raw: string) => setEndText(formatOnBlur(raw)), []);
-  const onBreakChange = useCallback((raw: string) => setBreakText(cleanInput(raw)), []);
-  const onBreakBlur   = useCallback((raw: string) => setBreakText(formatOnBlur(raw)), []);
+  const onStartBlur = useCallback((raw: string) => setStartText(formatOnBlur(raw)), []);
+  const onEndChange = useCallback((raw: string) => setEndText(cleanInput(raw)), []);
+  const onEndBlur = useCallback((raw: string) => setEndText(formatOnBlur(raw)), []);
 
   /* 整形文字列 */
   const normalizedStart = useMemo(() => formatOnBlur(startText), [startText]);
-  const normalizedEnd   = useMemo(() => formatOnBlur(endText), [endText]);
-  const normalizedBreak = useMemo(() => formatOnBlur(breakText), [breakText]);
+  const normalizedEnd = useMemo(() => formatOnBlur(endText), [endText]);
+
+  // 休憩は「カスタム時のみ」整形・パース
+  const normalizedBreak = useMemo(() => formatOnBlur(customBreakText), [customBreakText]);
+  const parsedBreak = useMemo(() => parseTimeStr(normalizedBreak), [normalizedBreak]);
 
   /* パース */
   const parsedStart = useMemo(() => parseTimeStr(normalizedStart), [normalizedStart]);
-  const parsedEnd   = useMemo(() => parseTimeStr(normalizedEnd), [normalizedEnd]);
-  const parsedBreak = useMemo(() => parseTimeStr(normalizedBreak), [normalizedBreak]);
+  const parsedEnd = useMemo(() => parseTimeStr(normalizedEnd), [normalizedEnd]);
 
   /* 確定 */
   const onConfirm = useCallback(() => {
-    const s = parsedStart, e = parsedEnd, b = parsedBreak;
-    if (!s || !e || !b) {
+    const s = parsedStart, e = parsedEnd;
+
+    const bSec =
+      breakPreset === "custom"
+        ? (() => {
+            const b = parsedBreak;
+            if (!b) {
+              setError("休憩の入力形式が正しくありません。（例：0100 → 01:00）");
+              return null;
+            }
+            return toTotalSeconds(b);
+          })()
+        : BREAK_PRESET_SECONDS[breakPreset as Exclude<BreakPreset, "custom">];
+
+    if (!s || !e || bSec == null) {
       setError("入力形式が正しくありません。（例：0800 → 08:00）");
       return;
     }
     const sSec = toTotalSeconds(s);
     let eSec = toTotalSeconds(e);
-    const bSec = toTotalSeconds(b);
     if (overnight) eSec += 24 * 3600;
     if (eSec < sSec) {
       setError("終業時間が始業時間より前です。「翌日またぎ」をオンにしてください。");
@@ -221,7 +259,7 @@ export default function Page() {
     setConfirmedEnd(e);
     setConfirmedBreakSec(bSec);
     setConfirmedOvernight(overnight);
-  }, [parsedStart, parsedEnd, parsedBreak, overnight]);
+  }, [parsedStart, parsedEnd, parsedBreak, overnight, breakPreset]);
 
   const onResetConfirm = useCallback(() => {
     setConfirmedStart(null);
@@ -254,11 +292,15 @@ export default function Page() {
 
   /* 目標終了プレビュー */
   const previewEnd = useMemo(() => {
-    if (!parsedStart || !parsedBreak) return null;
+    if (!parsedStart) return null;
     const base = toTotalSeconds(parsedStart);
-    const add = targetSeconds + (includeBreakInTarget ? toTotalSeconds(parsedBreak) : 0);
+    const breakSec =
+      breakPreset === "custom"
+        ? (parsedBreak ? toTotalSeconds(parsedBreak) : 0)
+        : BREAK_PRESET_SECONDS[breakPreset as Exclude<BreakPreset, "custom">];
+    const add = targetSeconds + (includeBreakInTarget ? breakSec : 0);
     return formatHhMmFromSeconds(base + add);
-  }, [parsedStart, parsedBreak, includeBreakInTarget, targetSeconds]);
+  }, [parsedStart, parsedBreak, includeBreakInTarget, targetSeconds, breakPreset]);
 
   /* 経過/残り（自動更新） */
   const baseForElapsed = useMemo(() => confirmedStart ?? parsedStart ?? null, [confirmedStart, parsedStart]);
@@ -270,10 +312,10 @@ export default function Page() {
   }, [previewEnd, baseForElapsed, nowTick]);
 
   /* 表示用数値 */
-  const hoursDecimal        = durationSeconds == null ? null : durationSeconds / 3600;
-  const minutesDecimal      = durationSeconds == null ? null : durationSeconds / 60;
-  const grossHoursDecimal   = grossSeconds    == null ? null : grossSeconds    / 3600;
-  const grossMinutesDecimal = grossSeconds    == null ? null : grossSeconds    / 60;
+  const hoursDecimal = durationSeconds == null ? null : durationSeconds / 3600;
+  const minutesDecimal = durationSeconds == null ? null : durationSeconds / 60;
+  const grossHoursDecimal = grossSeconds == null ? null : grossSeconds / 3600;
+  const grossMinutesDecimal = grossSeconds == null ? null : grossSeconds / 60;
 
   /* 15分単位適用 */
   const minutesRounded = useMemo(() => {
@@ -297,7 +339,7 @@ export default function Page() {
   }, [grossHoursDecimal, grossMinutesRounded, quarterMode]);
 
   const remainingSec = durationSeconds == null ? null : Math.max(0, targetSeconds - durationSeconds);
-  const overSec      = durationSeconds == null ? null : Math.max(0, durationSeconds - targetSeconds);
+  const overSec = durationSeconds == null ? null : Math.max(0, durationSeconds - targetSeconds);
 
   const remainingHm = useMemo(() => {
     if (remainingSec == null) return null;
@@ -316,23 +358,13 @@ export default function Page() {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch {
-      setError("コピーに失敗しました。ブラウザの権限やHTTPS環境をご確認ください。");
+      setError("コピーに失敗しました。ブラウザの権限や HTTPS環境をご確認ください。");
     }
   }, []);
 
-  /* カスタム目標入力 */
-  const onChangeTargetH = useCallback((val: string) => {
-    const n = parseInt(val, 10);
-    setTargetH(Number.isNaN(n) ? 0 : Math.max(0, n));
-  }, []);
-  const onChangeTargetM = useCallback((val: string) => {
-    const n = parseInt(val, 10);
-    setTargetM(Number.isNaN(n) ? 0 : Math.max(0, Math.min(59, n)));
-  }, []);
-
-  /* ---------------- 見た目調整: 青系タブ＆カード統一 ---------------- */
+  /* 見た目タブ共通クラス（参照用） */
   const tabGroup = "inline-flex overflow-hidden rounded-lg border border-sky-300";
-  const tabBase  = "px-3 py-1 text-sm focus:outline-none";
+  const tabBase = "px-3 py-1 text-sm focus:outline-none";
   const tabActive = "bg-sky-600 text-white";
   const tabInactive = "bg-white text-sky-700 hover:bg-sky-50";
 
@@ -359,7 +391,10 @@ export default function Page() {
                 inputMode="numeric"
                 autoComplete="off"
                 enterKeyHint="done"
-                className="mt-2 w-full rounded-lg border border-sky-300 bg-white p-3"
+                className="
+                  mt-2 w-full rounded-lg border border-sky-300 bg-white p-3
+                  focus:outline-none focus:ring-2 focus:ring-sky-300 focus:border-sky-500
+                "
               />
             </label>
 
@@ -373,24 +408,53 @@ export default function Page() {
                 inputMode="numeric"
                 autoComplete="off"
                 enterKeyHint="done"
-                className="mt-2 w-full rounded-lg border border-sky-300 bg-white p-3"
+                className="
+                  mt-2 w-full rounded-lg border border-sky-300 bg-white p-3
+                  focus:outline-none focus:ring-2 focus:ring-sky-300 focus:border-sky-500
+                "
               />
             </label>
           </div>
 
+          {/* 休憩：セレクト（青い▼／青ハイライト／フォーカス青） */}
           <div className="mt-5 grid grid-cols-1 gap-5 md:grid-cols-2">
             <label className="block">
-              <span className="text-base font-medium">休憩（半角）</span>
-              <input
-                value={breakText}
-                onChange={(e) => setBreakText(cleanInput(e.target.value))}
-                onBlur={(e) => setBreakText(formatOnBlur(e.target.value))}
-                placeholder="例: 01:00 / 0100"
-                inputMode="numeric"
-                autoComplete="off"
-                enterKeyHint="done"
-                className="mt-2 w-full rounded-lg border border-sky-300 bg-white p-3"
-              />
+              <span className="text-base font-medium">休憩</span>
+              <select
+                value={breakPreset}
+                onChange={(e) => setBreakPreset(e.target.value as BreakPreset)}
+                className="
+                  mt-2 w-full rounded-lg border border-sky-300 bg-white p-3 pr-10
+                  text-base text-slate-800 shadow-sm appearance-none
+                  focus:outline-none focus:ring-2 focus:ring-sky-300 focus:border-sky-500
+                  hover:border-sky-400 select-chevron-blue custom-select
+                "
+              >
+                <option value="00:00">なし（00:00）</option>
+                <option value="00:30">30分（00:30）</option>
+                <option value="00:45">45分（00:45）</option>
+                <option value="01:00">1時間（01:00）</option>
+                <option value="01:30">1時間30分（01:30）</option>
+                <option value="02:00">2時間（02:00）</option>
+                <option value="custom">カスタム</option>
+              </select>
+
+              {/* カスタム選択時のみ表示 */}
+              {breakPreset === "custom" && (
+                <input
+                  value={customBreakText}
+                  onChange={(e) => setCustomBreakText(cleanInput(e.target.value))}
+                  onBlur={(e) => setCustomBreakText(formatOnBlur(e.target.value))}
+                  placeholder="例: 01:00 / 0100"
+                  inputMode="numeric"
+                  autoComplete="off"
+                  enterKeyHint="done"
+                  className="
+                    mt-2 w-full rounded-lg border border-sky-300 bg-white p-3
+                    focus:outline-none focus:ring-2 focus:ring-sky-300 focus:border-sky-500
+                  "
+                />
+              )}
             </label>
 
             <div>
@@ -409,14 +473,21 @@ export default function Page() {
             </div>
           </div>
 
-          {/* 目標労働時間＋休憩含めるトグル */}
+          {/* 目標労働時間：セレクト（青い▼／青ハイライト／フォーカス青）＋ トグル */}
           <div className="mt-6 flex flex-wrap items-center gap-4">
-            <div className="flex items-center gap-3">
+            <div className="flex w-full max-w-md flex-col gap-2 sm:w-auto sm:max-w-none sm:flex-row sm:items-center">
               <span className="text-sm font-medium">目標労働時間</span>
+
               <select
                 value={targetPreset}
                 onChange={(e) => setTargetPreset(e.target.value as TargetPreset)}
-                className="rounded-lg border border-sky-300 bg-white px-3 py-2 text-sky-700"
+                className="
+                  w-full sm:w-auto rounded-lg border border-sky-300 bg-white p-3 pr-10
+                  text-base text-slate-800 shadow-sm appearance-none
+                  focus:outline-none focus:ring-2 focus:ring-sky-300 focus:border-sky-500
+                  hover:border-sky-400 select-chevron-blue custom-select
+                "
+                aria-label="目標労働時間プリセット"
               >
                 <option value="4h">4時間</option>
                 <option value="6h">6時間</option>
@@ -433,8 +504,11 @@ export default function Page() {
                     type="number"
                     min={0}
                     value={targetH}
-                    onChange={(e) => onChangeTargetH(e.target.value)}
-                    className="w-20 rounded-lg border border-sky-300 px-3 py-2"
+                    onChange={(e) => setTargetH(parseInt(e.target.value || "0", 10))}
+                    className="
+                      w-20 rounded-lg border border-sky-300 px-3 py-2
+                      focus:outline-none focus:ring-2 focus:ring-sky-300 focus:border-sky-500
+                    "
                     aria-label="目標労働時間（時）"
                   />
                   <span>時間</span>
@@ -443,8 +517,11 @@ export default function Page() {
                     min={0}
                     max={59}
                     value={targetM}
-                    onChange={(e) => onChangeTargetM(e.target.value)}
-                    className="w-20 rounded-lg border border-sky-300 px-3 py-2"
+                    onChange={(e) => setTargetM(Math.min(59, parseInt(e.target.value || "0", 10)))}
+                    className="
+                      w-20 rounded-lg border border-sky-300 px-3 py-2
+                      focus:outline-none focus:ring-2 focus:ring-sky-300 focus:border-sky-500
+                    "
                     aria-label="目標労働時間（分）"
                   />
                   <span>分</span>
@@ -480,24 +557,15 @@ export default function Page() {
               {previewEnd ? (
                 <>
                   <div className="text-base font-medium">
-                    目標終了時刻（始業＋目標{includeBreakInTarget ? "＋休憩" : ""}）：
+                    目標終了時刻（始業＋目標 {includeBreakInTarget ? "＋休憩" : ""}）：
                   </div>
                   <div className="mt-1 flex items-baseline gap-3">
                     <div className="text-2xl font-semibold">{previewEnd.label}</div>
                     <div className="text-sm text-slate-600">
-                      {timeStats && (
-                        <>
-                          （現在時刻から残り{" "}
-                          <span className="font-mono">{timeStats.rem.h}</span> 時間{" "}
-                          <span className="font-mono">{String(timeStats.rem.m).padStart(2, "0")}</span> 分 ／ 経過{" "}
-                          <span className="font-mono">{timeStats.el.h}</span> 時間{" "}
-                          <span className="font-mono">{String(timeStats.el.m).padStart(2, "0")}</span> 分）
-                          {timeStats.rem.passed && <span className="ml-1">※目標時刻を過ぎています</span>}
-                        </>
-                      )}
+                      {/* 残り／経過の補助表示（任意） */}
                     </div>
-                    {previewEnd.nextDay && <span className="text-sm">（翌日）</span>}
                   </div>
+                  {previewEnd.nextDay && <span className="text-sm">（翌日）</span>}
                 </>
               ) : (
                 <span>始業・休憩の入力で目標終了時刻を表示します。</span>
@@ -526,97 +594,91 @@ export default function Page() {
           {error && <p className="mt-3 text-sm font-medium text-red-600">{error}</p>}
         </div>
 
-        {/* ====== 結果（青系タブに統一） ====== */}
+        {/* ====== 結果（丸めタブ：一行ずつ横並び＋必要時は横スクロール） ====== */}
         {durationSeconds != null && (
           <section className="mt-6 grid grid-cols-1 gap-6">
             <div className="rounded-xl border border-sky-200 bg-white p-5 shadow-sm">
-              <div className="flex items-center justify-between">
-                <h2 className="text-lg font-semibold">結果</h2>
+              <h2 className="text-lg font-semibold">結果</h2>
 
-                <div className="flex flex-wrap items-center gap-4">
-                  {/* 時間の丸めタブ（青統一） */}
-                  <div className="flex items-center gap-2">
-                    <span className="text-sm text-slate-700">時間の丸め</span>
-                    <div className={tabGroup}>
-                      <button
-                        type="button"
-                        onClick={() => setHoursRounding("floor")}
-                        className={`${tabBase} ${hoursRounding === "floor" ? tabActive : tabInactive}`}
-                        aria-label="時間を少数第3位で切り捨て"
-                      >
-                        切捨
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setHoursRounding("ceil")}
-                        className={`${tabBase} border-l border-sky-300 ${hoursRounding === "ceil" ? tabActive : tabInactive}`}
-                        aria-label="時間を少数第3位で切り上げ"
-                      >
-                        切上
-                      </button>
-                    </div>
-                  </div>
-
-                  {/* 分の丸めタブ（青統一）— 15分単位オン時は見た目グレー */}
-                  <div className="flex items-center gap-2">
-                    <span className="text-sm text-slate-700">分の丸め</span>
-                    <div
-                      className={`${tabGroup} ${quarterMode !== "off" ? "opacity-60 pointer-events-none" : ""}`}
+              {/* 3 行とも 横一列固定／横スクロール対応 */}
+              <div className="mt-4 space-y-3">
+                {/* 時間の丸め｜[切捨][切上] */}
+                <div className="result-row">
+                  <span className="text-sm text-slate-700 mr-2">時間の丸め</span>
+                  <div className="inline-flex overflow-hidden rounded-lg border border-sky-300">
+                    <button
+                      type="button"
+                      onClick={() => setHoursRounding("floor")}
+                      className={`px-3 py-1 text-sm focus:outline-none ${hoursRounding === "floor" ? "bg-sky-600 text-white" : "bg-white text-sky-700 hover:bg-sky-50"}`}
                     >
-                      <button
-                        type="button"
-                        onClick={() => setMinutesRounding("floor")}
-                        className={`${tabBase} ${minutesRounding === "floor" ? tabActive : tabInactive}`}
-                        aria-label="分を少数第1位で切り捨て"
-                      >
-                        切捨
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setMinutesRounding("ceil")}
-                        className={`${tabBase} border-l border-sky-300 ${minutesRounding === "ceil" ? tabActive : tabInactive}`}
-                        aria-label="分を少数第1位で切り上げ"
-                      >
-                        切上
-                      </button>
-                    </div>
+                      切捨
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setHoursRounding("ceil")}
+                      className={`px-3 py-1 text-sm focus:outline-none border-l border-sky-300 ${hoursRounding === "ceil" ? "bg-sky-600 text-white" : "bg-white text-sky-700 hover:bg-sky-50"}`}
+                    >
+                      切上
+                    </button>
                   </div>
+                </div>
 
-                  {/* 15分単位タブ（青統一） */}
-                  <div className="flex items-center gap-2">
-                    <span className="text-sm text-slate-700">15分単位</span>
-                    <div className={tabGroup}>
-                      <button
-                        type="button"
-                        onClick={() => setQuarterMode("off")}
-                        className={`${tabBase} ${quarterMode === "off" ? tabActive : tabInactive}`}
-                        aria-label="15分単位をオフ"
-                      >
-                        オフ
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setQuarterMode("floor")}
-                        className={`${tabBase} border-l border-sky-300 ${quarterMode === "floor" ? tabActive : tabInactive}`}
-                        aria-label="15分単位で切り捨て"
-                      >
-                        切捨
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setQuarterMode("ceil")}
-                        className={`${tabBase} border-l border-sky-300 ${quarterMode === "ceil" ? tabActive : tabInactive}`}
-                        aria-label="15分単位で切り上げ"
-                      >
-                        切上
-                      </button>
-                    </div>
+                {/* 分の丸め｜[切捨][切上] */}
+                <div className="result-row">
+                  <span className="text-sm text-slate-700 mr-2">分の丸め</span>
+                  <div
+                    className={`inline-flex overflow-hidden rounded-lg border border-sky-300 ${
+                      quarterMode !== "off" ? "opacity-60 pointer-events-none" : ""
+                    }`}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => setMinutesRounding("floor")}
+                      className={`px-3 py-1 text-sm focus:outline-none ${minutesRounding === "floor" ? "bg-sky-600 text-white" : "bg-white text-sky-700 hover:bg-sky-50"}`}
+                    >
+                      切捨
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setMinutesRounding("ceil")}
+                      className={`px-3 py-1 text-sm focus:outline-none border-l border-sky-300 ${minutesRounding === "ceil" ? "bg-sky-600 text-white" : "bg-white text-sky-700 hover:bg-sky-50"}`}
+                    >
+                      切上
+                    </button>
+                  </div>
+                </div>
+
+                {/* 15分単位｜[オフ][切捨][切上] */}
+                <div className="result-row">
+                  <span className="text-sm text-slate-700 mr-2">15分単位</span>
+                  <div className="inline-flex overflow-hidden rounded-lg border border-sky-300">
+                    <button
+                      type="button"
+                      onClick={() => setQuarterMode("off")}
+                      className={`px-3 py-1 text-sm focus:outline-none ${quarterMode === "off" ? "bg-sky-600 text-white" : "bg-white text-sky-700 hover:bg-sky-50"}`}
+                    >
+                      オフ
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setQuarterMode("floor")}
+                      className={`px-3 py-1 text-sm focus:outline-none border-l border-sky-300 ${quarterMode === "floor" ? "bg-sky-600 text-white" : "bg-white text-sky-700 hover:bg-sky-50"}`}
+                    >
+                      切捨
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setQuarterMode("ceil")}
+                      className={`px-3 py-1 text-sm focus:outline-none border-l border-sky-300 ${quarterMode === "ceil" ? "bg-sky-600 text-white" : "bg-white text-sky-700 hover:bg-sky-50"}`}
+                    >
+                      切上
+                    </button>
                   </div>
                 </div>
               </div>
 
               {/* 正味（休憩差引） */}
-              <div className="mt-4 space-y-5">
+              <div className="mt-5 space-y-5">
                 {/* 時間（休憩を除く） */}
                 <div>
                   <div className="flex items-center justify-between">
@@ -625,12 +687,15 @@ export default function Page() {
                       <button
                         type="button"
                         disabled={hoursBase == null}
-                        onClick={() =>
-                          hoursBase != null &&
-                          copyText(formatHoursByMode(hoursBase, hoursRounding), setCopiedHour)
-                        }
+                        onClick={() => {
+                          if (hoursBase != null) {
+                            copyText(formatHoursByMode(hoursBase, hoursRounding), setCopiedHour);
+                          }
+                        }}
                         className={`rounded-lg px-4 py-2 text-sm font-medium ${
-                          hoursBase != null ? "bg-sky-600 text-white" : "bg-slate-200 text-slate-400 cursor-not-allowed"
+                          hoursBase != null
+                            ? "bg-sky-600 text-white"
+                            : "bg-slate-200 text-slate-400 cursor-not-allowed"
                         }`}
                       >
                         数字をコピー
@@ -688,9 +753,8 @@ export default function Page() {
               </div>
             </div>
 
-            {/* ==== 休憩を含む（総経過）— デザインを上と統一 ==== */}
+            {/* ==== 休憩を含む（総経過） ==== */}
             <div className="rounded-xl border border-sky-200 bg-white p-5 shadow-sm">
-              {/* タイトル行は上カードと同じ構成 */}
               <div className="flex items-center justify-between">
                 <h2 className="text-lg font-semibold">休憩を含む</h2>
               </div>
@@ -704,12 +768,15 @@ export default function Page() {
                       <button
                         type="button"
                         disabled={grossHoursBase == null}
-                        onClick={() =>
-                          grossHoursBase != null &&
-                          copyText(formatHoursByMode(grossHoursBase, hoursRounding), setCopiedGrossHour)
-                        }
+                        onClick={() => {
+                          if (grossHoursBase != null) {
+                            copyText(formatHoursByMode(grossHoursBase, hoursRounding), setCopiedGrossHour);
+                          }
+                        }}
                         className={`rounded-lg px-4 py-2 text-sm font-medium ${
-                          grossHoursBase != null ? "bg-sky-600 text-white" : "bg-slate-200 text-slate-400 cursor-not-allowed"
+                          grossHoursBase != null
+                            ? "bg-sky-600 text-white"
+                            : "bg-slate-200 text-slate-400 cursor-not-allowed"
                         }`}
                       >
                         数字をコピー
@@ -775,13 +842,13 @@ export default function Page() {
                   <p className="font-semibold text-emerald-700">到達（±0分）</p>
                 ) : (remainingSec! > 0) ? (
                   <p className="font-semibold">
-                    目標労働時間 {targetH}時間{String(targetM).padStart(2, "0")}分 にはあと{" "}
+                    目標労働時間 {targetH}時間 {String(targetM).padStart(2, "0")}分 にはあと{" "}
                     <span className="font-mono">{remainingHm!.h}</span> 時間{" "}
                     <span className="font-mono">{String(remainingHm!.m).padStart(2, "0")}</span> 分必要です。
                   </p>
                 ) : (
                   <p className="font-semibold">
-                    目標労働時間 {targetH}時間{String(targetM).padStart(2, "0")}分 を{" "}
+                    目標労働時間 {targetH}時間 {String(targetM).padStart(2, "0")}分 を{" "}
                     <span className="font-mono">{overHm!.h}</span> 時間{" "}
                     <span className="font-mono">{String(overHm!.m).padStart(2, "0")}</span> 分超過しています。
                   </p>

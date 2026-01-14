@@ -6,12 +6,6 @@
   --foreground: #171717;
 }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
 
 @media (prefers-color-scheme: dark) {
   :root {
@@ -25,3 +19,38 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+/* ▼を青に。背景画像(SVG)で差し込み。 */
+.select-chevron-blue {
+  background-image: url("data:image/svg+xml,%3Csvg width='14' height='14' viewBox='0 0 20 20' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath fill='%230ea5e9' d='M5.516 7.548l4.484 4.482 4.484-4.482A1 1 0 0013.484 6H6.516a1 1 0 00-.7 1.548z'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  background-size: 14px 14px;
+}
+
+/* Windows/Chrome などのネイティブメニュー部分の色は OS 依存。
+   ただし親 <select> の text系・line-height は反映されます。*/
+
+/* ▼ を青で描画（右端に配置） */
+.select-chevron-blue {
+  background-image: url("data:image/svg+xml,%3Csvg width='14' height='14' viewBox='0 0 20 20' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath fill='%230ea5e9' d='M5.516 7.548l4.484 4.482 4.484-4.482A1 1 0 0013.484 6H6.516a1 1 0 00-.7 1.548z'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  background-size: 14px 14px;
+}
+
+/* セレクトの“選択中・ホバー中”のメニュー色を可能な範囲で青系に（ブラウザ依存あり） */
+select.custom-select option:checked {
+  /* sky-100 相当の薄い青背景 + 濃い目の青文字 */
+  background-color: #e0f2fe;  /* sky-100 */
+  color: #075985;             /* sky-700 近似 */
+}
+select.custom-select option:hover {
+  background-color: #f0f9ff;  /* sky-50 */
+}
+
+/* Windows の旧 Edge/IE 用に標準の ▼ を非表示（対応ブラウザのみ）*/
+select.custom-select::-ms-expand {
+  display: none;
+}
+
